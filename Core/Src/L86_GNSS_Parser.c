@@ -7,15 +7,18 @@
 
 #include "L86_GNSS_Parser.h"
 #include "usr_gnss_general.h"
+#include "usart.h"
 
 #define DMA_READ_DEF_SIZE 650
 #define _buffer_size 1024
 #define _max_message_size 90
 
-extern DMA_HandleTypeDef hdma_usart4_rx;
+#define GPS_UART_HNDLR		huart4
+#define DMA_GNSS			hdma_uart4_rx
 
-extern UART_HandleTypeDef huart4;
-extern uint8_t *mosfet_buffer;
+extern DMA_HandleTypeDef DMA_GNSS;
+extern UART_HandleTypeDef GPS_UART_HNDLR;
+uint8_t mosfet_buffer[1000];
 extern uint8_t is_updated_uart4;
 
 typedef enum
@@ -57,16 +60,19 @@ ErrorCode error = NO_ERROR_STATE; // UU
 
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
-    if (huart == &huart4)
+
+    if (huart == &GPS_UART_HNDLR)
     {
         g_GnssRx_Flag = true;
         g_openFixedDataTransmition = true;
     }
-    if (huart == &huart4)
+    /*
+    if (huart == &GPS_UART_HNDLR)
     {
         is_updated_uart4 = 1;
-        HAL_UART_Receive_DMA(&huart4, mosfet_buffer, 3);
+        HAL_UART_Receive_DMA(&GPS_UART_HNDLR, mosfet_buffer, 3);
     }
+    */
     // HAL_UART_Transmit(&huart1, m_rxData, strlen(m_rxData), 100);
 }
 
@@ -97,10 +103,53 @@ void Usr_GpsL86GetValues(S_GPS_L86_DATA *gpsData_)
     gpsData_->timeDateBuf = gpsData.timeDateBuf;
     gpsData_->fixQualityID = gpsData.fixQualityID;
     gpsData_->altitudeInMeter = gpsData.altitudeInMeter;
-    UsrGpsL86Init(&huart4);
+    UsrGpsL86Init(&GPS_UART_HNDLR);
 }
 
 //============================= Statics
+/*
+_io void getRmc(void)
+{
+    if (g_GnssRx_Flag)
+    {
+        MsgIndex = 0;
+        strcpy(m_gpsTransmitBuf, (char *)(m_rxData));
+        ptr = strstr(m_gpsTransmitBuf, "GNRMC");
+        if (*ptr == 'G')
+        {
+            while (1)
+            {
+                gpsPayload[MsgIndex] = *ptr;
+                MsgIndex++;
+                *ptr = *(ptr + MsgIndex);
+				if (*ptr == '\n' || MsgIndex > _max_message_size)
+				{
+					MsgIndex = 0;
+					// memset(m_gpsTransmitBuf, 0, sizeof(m_gpsTransmitBuf));
+					//  memset(m_rxData, 0, sizeof(m_rxData));
+
+					if (strlen(gpsPayload) > 10)
+					{
+						char x;
+						sscanf(gpsPayload, "GNRMC,%f,A,%f,%c,%f,%c,%f,", &gpsData.timeDateBuf, &m_nonFormattedLat, &x, &m_nonFormattedLon, &x, &gpsData.speedKN);
+						rmcValidFlag = true;
+						formatLatLong();
+					}
+					else
+					{
+						// dataErr Log
+						memset(gpsPayload, 0, sizeof(gpsPayload));
+					}
+					break;
+				}
+
+            }
+        }
+    g_GnssRx_Flag = false;
+}
+*/
+
+
 
 _io void getRmc(void)
 {
@@ -122,27 +171,12 @@ _io void getRmc(void)
                     // memset(m_gpsTransmitBuf, 0, sizeof(m_gpsTransmitBuf));
                     //  memset(m_rxData, 0, sizeof(m_rxData));
 
-                    for (int i = 0; i < 100; i++)
-                    {
-                        if (gpsPayload[i] == 'N')
-                            f_northFlag = true;
-                        if (gpsPayload[i] == 'E')
-                            f_eastFlag = true;
-                    }
                     if (strlen(gpsPayload) > 10)
                     {
-                        if (f_eastFlag && f_northFlag)
-                        {
-                            f_northFlag = false;
-                            f_eastFlag = false;
-                            sscanf(gpsPayload, "GNRMC,%f,A,%f,N,%f,E,%f,", &gpsData.timeDateBuf, &m_nonFormattedLat, &m_nonFormattedLon, &gpsData.speedKN);
-                            rmcValidFlag = true;
-                            formatLatLong();
-                        }
-                        else
-                        {
-                            // connErr Log
-                        }
+						char x;
+						sscanf(gpsPayload, "GNRMC,%f,A,%f,%c,%f,%c,%f,", &gpsData.timeDateBuf, &m_nonFormattedLat, &x, &m_nonFormattedLon, &gpsData.east_west, &gpsData.speedKN);
+						rmcValidFlag = true;
+						formatLatLong();
                     }
                     else
                     {
@@ -157,6 +191,8 @@ _io void getRmc(void)
     }
 }
 
+
+
 _io void formatLatLong(void)
 {
     int degrees = (int)m_nonFormattedLat / 100;        // dec
@@ -166,6 +202,10 @@ _io void formatLatLong(void)
     degrees = (int)m_nonFormattedLon / 100;
     minutes = m_nonFormattedLon - degrees * 100;
     gpsData.lon = degrees + (minutes / 60);
+	if(gpsData.east_west == 'W')
+	{
+		gpsData.lon = gpsData.lon * -1;
+	}
 }
 
 _io void getGGA(void)
@@ -191,7 +231,7 @@ _io void getGGA(void)
 
                     if (strlen(gpsGGAPayload) > 10)
                     {
-                        sscanf(gpsGGAPayload, "GPGGA,%f,%f,N,%f,E,%d,%d,%f,%f,M,%f,M,", &gpsData.fixedTime, &gpsData.fixedLatBaseFormat, &gpsData.fixedLonBaseFormat, &gpsData.fixQualityID, &gpsData.satInUse, &gpsData.hdop, &gpsData.altitudeInMeter, &gpsData.WGS84);
+                        sscanf(gpsGGAPayload, "GPGGA,%f,%f,N,%f,W,%d,%d,%f,%f,M,%f,M,", &gpsData.fixedTime, &gpsData.fixedLatBaseFormat, &gpsData.fixedLonBaseFormat, &gpsData.fixQualityID, &gpsData.satInUse, &gpsData.hdop, &gpsData.altitudeInMeter, &gpsData.WGS84);
                     }
                     else
                     {

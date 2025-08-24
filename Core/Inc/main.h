@@ -57,16 +57,26 @@ void Error_Handler(void);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
+#define VOLTAGE_Pin GPIO_PIN_1
+#define VOLTAGE_GPIO_Port GPIOC
+#define CURRENT_Pin GPIO_PIN_2
+#define CURRENT_GPIO_Port GPIOC
 #define RF_M1_Pin GPIO_PIN_2
 #define RF_M1_GPIO_Port GPIOB
 #define LED_Pin GPIO_PIN_10
 #define LED_GPIO_Port GPIOB
+#define SPI2_CS_Pin GPIO_PIN_12
+#define SPI2_CS_GPIO_Port GPIOB
 #define RF_AUX_Pin GPIO_PIN_12
 #define RF_AUX_GPIO_Port GPIOA
+#define SD_CS_Pin GPIO_PIN_15
+#define SD_CS_GPIO_Port GPIOA
 #define RF_M0_Pin GPIO_PIN_3
 #define RF_M0_GPIO_Port GPIOB
 #define BUZZER_Pin GPIO_PIN_4
 #define BUZZER_GPIO_Port GPIOB
+#define SD_CD_Pin GPIO_PIN_9
+#define SD_CD_GPIO_Port GPIOB
 /* USER CODE BEGIN Private defines */
 
 /* USER CODE END Private defines */

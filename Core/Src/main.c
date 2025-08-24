@@ -18,11 +18,22 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "adc.h"
+#include "dma.h"
+#include "fatfs.h"
+#include "i2c.h"
+#include "spi.h"
+#include "usart.h"
+#include "gpio.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "l86_gnss_parser.h"
-
+#include "e22_lib.h"
+#include <stdio.h>
+#include <string.h>
+#include "data_logger.h"
+#include "dataPacking.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -32,6 +43,11 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+#define LORA_UART_HNDLR		huart1
+#define TTL_UART_HNDLR		huart5
+#define BME_I2C_HNDLR		hi2c1
+#define GPS_UART_HNDLR		huart4
+#define DMA_GNSS			hdma_uart4_rx
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -40,30 +56,22 @@
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
- UART_HandleTypeDef huart4;
-UART_HandleTypeDef huart5;
-UART_HandleTypeDef huart1;
-DMA_HandleTypeDef hdma_uart4_rx;
 
 /* USER CODE BEGIN PV */
- UART_HandleTypeDef huart4;
- DMA_HandleTypeDef hdma_usart4_rx;
+e22_conf_struct_t lora_1;
+DMA_HandleTypeDef hdma_usart4_rx;
+S_GPS_L86_DATA gnss_data;
 
- static S_GPS_L86_DATA gnss_data;
+uint8_t data[100];
+uint8_t is_updated_uart4;
 
- uint8_t data[100];
- uint8_t is_updated_uart4;
- uint8_t mosfet_buffer[300];
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
-static void MX_GPIO_Init(void);
-static void MX_DMA_Init(void);
-static void MX_UART4_Init(void);
-static void MX_UART5_Init(void);
-static void MX_USART1_UART_Init(void);
 /* USER CODE BEGIN PFP */
+void lora_init(void);
 
 /* USER CODE END PFP */
 
@@ -104,11 +112,40 @@ int main(void)
   MX_UART4_Init();
   MX_UART5_Init();
   MX_USART1_UART_Init();
+  MX_ADC1_Init();
+  MX_I2C1_Init();
+  MX_SPI1_Init();
+  MX_SPI2_Init();
+  MX_SPI3_Init();
+  MX_FATFS_Init();
   /* USER CODE BEGIN 2 */
-  UsrGpsL86Init(&huart4);
-  HAL_GPIO_WritePin(RF_M0_GPIO_Port, RF_M0_Pin, GPIO_PIN_RESET);
-  HAL_GPIO_WritePin(RF_M1_GPIO_Port, RF_M1_Pin, GPIO_PIN_RESET);
 
+  data_logger_init();
+
+  lora_init();
+
+  HAL_UART_Transmit(&GPS_UART_HNDLR, (uint8_t*)"$PMTK251,57600*2C\r\n", 19, 100);				// 57600 bps
+  HAL_Delay(10);
+  HAL_UART_DeInit(&GPS_UART_HNDLR);
+  HAL_Delay(10);
+  GPS_UART_HNDLR.Init.BaudRate = 57600;
+  HAL_UART_Init(&GPS_UART_HNDLR);
+  HAL_Delay(10);
+
+  for(int i = 0; i < 6; i++)
+  {
+	  HAL_GPIO_WritePin(BUZZER_GPIO_Port, BUZZER_Pin, GPIO_PIN_SET);
+	  HAL_Delay(50);
+	  HAL_GPIO_WritePin(BUZZER_GPIO_Port, BUZZER_Pin, GPIO_PIN_RESET);
+	  HAL_Delay(50);
+  }
+  HAL_GPIO_WritePin(BUZZER_GPIO_Port, BUZZER_Pin, GPIO_PIN_SET);
+  HAL_Delay(1000);
+  HAL_GPIO_WritePin(BUZZER_GPIO_Port, BUZZER_Pin, GPIO_PIN_RESET);
+
+  UsrGpsL86Init(&GPS_UART_HNDLR);
+
+  HAL_ADC_Start(&hadc1);
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -118,11 +155,29 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-	 Usr_GpsL86GetValues(&gnss_data);
-	 HAL_Delay(1000);
-	 sprintf((char*)data, "lat: %f    Lon: %f \n\r", gnss_data.lat, gnss_data.lon);
-	 HAL_UART_Transmit(&huart1, data, strlen((char*)data), 100);
 
+/*
+	  while (1)
+	  {
+	      if (__HAL_UART_GET_FLAG(&GPS_UART_HNDLR, UART_FLAG_RXNE))
+	      {
+	          rx = (uint8_t)(GPS_UART_HNDLR.Instance->DR);
+	          HAL_UART_Transmit(&TTL_UART_HNDLR, &rx, 1, 10); // echo
+	      }
+	  }
+*/
+	  HAL_ADC_Start(&hadc1);
+	 HAL_ADC_PollForConversion(&hadc1, 50);
+	 uint32_t voltage_raw = HAL_ADC_GetValue(&hadc1);
+	 uint16_t voltage = (uint16_t)(((float)voltage_raw * 13.2 / 4096) * 100);
+	 Usr_GpsL86GetValues(&gnss_data);
+	 uint8_t *datas = packDatas(&gnss_data, voltage);
+	 e22_transmit(&lora_1, datas, &LORA_UART_HNDLR, 64);
+	 log_datas(gnss_data.altitudeInMeter, gnss_data.lat, gnss_data.lon, gnss_data.timeDateBuf, 0, 0, 0);
+	 HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_SET);
+	 HAL_Delay(100);
+	 HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_RESET);
+	 HAL_Delay(900);
   }
   /* USER CODE END 3 */
 }
@@ -173,157 +228,40 @@ void SystemClock_Config(void)
   }
 }
 
-/**
-  * @brief UART4 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_UART4_Init(void)
-{
-
-  /* USER CODE BEGIN UART4_Init 0 */
-
-  /* USER CODE END UART4_Init 0 */
-
-  /* USER CODE BEGIN UART4_Init 1 */
-
-  /* USER CODE END UART4_Init 1 */
-  huart4.Instance = UART4;
-  huart4.Init.BaudRate = 9600;
-  huart4.Init.WordLength = UART_WORDLENGTH_8B;
-  huart4.Init.StopBits = UART_STOPBITS_1;
-  huart4.Init.Parity = UART_PARITY_NONE;
-  huart4.Init.Mode = UART_MODE_TX_RX;
-  huart4.Init.HwFlowCtl = UART_HWCONTROL_NONE;
-  huart4.Init.OverSampling = UART_OVERSAMPLING_16;
-  if (HAL_UART_Init(&huart4) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN UART4_Init 2 */
-
-  /* USER CODE END UART4_Init 2 */
-
-}
-
-/**
-  * @brief UART5 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_UART5_Init(void)
-{
-
-  /* USER CODE BEGIN UART5_Init 0 */
-
-  /* USER CODE END UART5_Init 0 */
-
-  /* USER CODE BEGIN UART5_Init 1 */
-
-  /* USER CODE END UART5_Init 1 */
-  huart5.Instance = UART5;
-  huart5.Init.BaudRate = 115200;
-  huart5.Init.WordLength = UART_WORDLENGTH_8B;
-  huart5.Init.StopBits = UART_STOPBITS_1;
-  huart5.Init.Parity = UART_PARITY_NONE;
-  huart5.Init.Mode = UART_MODE_TX_RX;
-  huart5.Init.HwFlowCtl = UART_HWCONTROL_NONE;
-  huart5.Init.OverSampling = UART_OVERSAMPLING_16;
-  if (HAL_UART_Init(&huart5) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN UART5_Init 2 */
-
-  /* USER CODE END UART5_Init 2 */
-
-}
-
-/**
-  * @brief USART1 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_USART1_UART_Init(void)
-{
-
-  /* USER CODE BEGIN USART1_Init 0 */
-
-  /* USER CODE END USART1_Init 0 */
-
-  /* USER CODE BEGIN USART1_Init 1 */
-
-  /* USER CODE END USART1_Init 1 */
-  huart1.Instance = USART1;
-  huart1.Init.BaudRate = 9600;
-  huart1.Init.WordLength = UART_WORDLENGTH_8B;
-  huart1.Init.StopBits = UART_STOPBITS_1;
-  huart1.Init.Parity = UART_PARITY_NONE;
-  huart1.Init.Mode = UART_MODE_TX_RX;
-  huart1.Init.HwFlowCtl = UART_HWCONTROL_NONE;
-  huart1.Init.OverSampling = UART_OVERSAMPLING_16;
-  if (HAL_UART_Init(&huart1) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN USART1_Init 2 */
-
-  /* USER CODE END USART1_Init 2 */
-
-}
-
-/**
-  * Enable DMA controller clock
-  */
-static void MX_DMA_Init(void)
-{
-
-  /* DMA controller clock enable */
-  __HAL_RCC_DMA1_CLK_ENABLE();
-
-  /* DMA interrupt init */
-  /* DMA1_Stream2_IRQn interrupt configuration */
-  HAL_NVIC_SetPriority(DMA1_Stream2_IRQn, 0, 0);
-  HAL_NVIC_EnableIRQ(DMA1_Stream2_IRQn);
-
-}
-
-/**
-  * @brief GPIO Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_GPIO_Init(void)
-{
-  GPIO_InitTypeDef GPIO_InitStruct = {0};
-
-  /* GPIO Ports Clock Enable */
-  __HAL_RCC_GPIOH_CLK_ENABLE();
-  __HAL_RCC_GPIOA_CLK_ENABLE();
-  __HAL_RCC_GPIOB_CLK_ENABLE();
-  __HAL_RCC_GPIOC_CLK_ENABLE();
-  __HAL_RCC_GPIOD_CLK_ENABLE();
-
-  /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOB, RF_M1_Pin|LED_Pin|RF_M0_Pin|BUZZER_Pin, GPIO_PIN_RESET);
-
-  /*Configure GPIO pins : RF_M1_Pin LED_Pin RF_M0_Pin BUZZER_Pin */
-  GPIO_InitStruct.Pin = RF_M1_Pin|LED_Pin|RF_M0_Pin|BUZZER_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
-
-  /*Configure GPIO pin : RF_AUX_Pin */
-  GPIO_InitStruct.Pin = RF_AUX_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  HAL_GPIO_Init(RF_AUX_GPIO_Port, &GPIO_InitStruct);
-
-}
-
 /* USER CODE BEGIN 4 */
 
+void lora_init(void)
+{
+	HAL_Delay(50);
+	lora_1.baud_rate 		= 	E22_BAUD_RATE_115200;
+	lora_1.parity_bit		=	E22_PARITY_8N1;
+	lora_1.air_rate			=	E22_AIR_DATA_RATE_38400;
+	lora_1.packet_size		=	E22_PACKET_SIZE_64;
+	lora_1.rssi_noise		=	E22_RSSI_NOISE_DISABLE;
+	lora_1.power			=	E22_TRANSMITTING_POWER_22;
+	lora_1.rssi_enable		=	E22_ENABLE_RSSI_DISABLE;
+	lora_1.mode				= 	E22_TRANSMISSION_MODE_TRANSPARENT;
+	lora_1.repeater_func	=	E22_REPEATER_FUNC_DISABLE;
+	lora_1.lbt				=	E22_LBT_DISABLE;
+	lora_1.wor				=	E22_WOR_RECEIVER;
+	lora_1.wor_cycle		=	E22_WOR_CYCLE_1000;
+	lora_1.channel			=	(uint8_t)19;
+	lora_1.key				=	0;
+
+	lora_1.pins.m0_pin		=	RF_M0_Pin;
+	lora_1.pins.m0_pin_port	=	RF_M0_GPIO_Port;
+	lora_1.pins.m1_pin		=	RF_M1_Pin;
+	lora_1.pins.m1_pin_port	=	RF_M1_GPIO_Port;
+
+	e22_init(&lora_1, &LORA_UART_HNDLR);
+	HAL_Delay(10);
+	HAL_UART_DeInit(&LORA_UART_HNDLR);
+	HAL_Delay(10);
+	LORA_UART_HNDLR.Init.BaudRate = 115200;
+	HAL_UART_Init(&LORA_UART_HNDLR);
+	HAL_Delay(10);
+
+}
 /* USER CODE END 4 */
 
 /**
@@ -337,6 +275,7 @@ void Error_Handler(void)
   __disable_irq();
   while (1)
   {
+
   }
   /* USER CODE END Error_Handler_Debug */
 }
